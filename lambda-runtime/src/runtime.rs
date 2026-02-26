@@ -363,13 +363,12 @@ where
     /// unset.
     pub async fn run(self) -> Result<(), BoxError> {
         if let Some(raw) = concurrency_env_value() {
-            if tracing::dispatcher::has_been_set() {
-                tracing::warn!(
+            log_or_print!(
+                tracing: tracing::warn!(
                     "AWS_LAMBDA_MAX_CONCURRENCY is set to '{raw}', but the concurrency-tokio feature is not enabled; running sequentially",
-                );
-            } else {
-                eprintln!("AWS_LAMBDA_MAX_CONCURRENCY is set to '{raw}', but the concurrency-tokio feature is not enabled; running sequentially");
-            }
+                ),
+                fallback: eprintln!("AWS_LAMBDA_MAX_CONCURRENCY is set to '{raw}', but the concurrency-tokio feature is not enabled; running sequentially")
+            );
         }
         let incoming = incoming(&self.client);
         Self::run_with_incoming(self.service, self.config, incoming).await
@@ -938,6 +937,8 @@ mod endpoint_tests {
 
     #[tokio::test]
     #[cfg(feature = "concurrency-tokio")]
+    #[traced_test]
+    #[cfg(feature = "tokio-concurrent-runtime")]
     async fn test_concurrent_structured_logging_isolation() -> Result<(), Error> {
         use std::collections::HashSet;
         use tracing::info;

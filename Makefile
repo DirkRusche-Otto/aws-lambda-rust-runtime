@@ -6,6 +6,7 @@ INTEG_EXTENSIONS := extension-fn extension-trait logs-trait
 # Using musl to run extensions on both AL1 and AL2
 INTEG_ARCH := x86_64-unknown-linux-musl
 RIE_MAX_CONCURRENCY ?= 4
+TEST_RUNNER_BRANCH ?= main
 OUTPUT_DIR ?= test/dockerized/tasks
 HANDLERS_TO_BUILD ?=
 HANDLER ?=
@@ -14,12 +15,12 @@ HANDLER ?=
 -include .env
 export
 
-.PHONY: help pr-check integration-tests check-event-features fmt build-examples test-rie test-rie-lmi nuke test-dockerized
+.PHONY: help pr-check integration-tests check-event-features fmt build-examples build-test-runner test-rie test-rie-lmi nuke test-dockerized test-dockerized-concurrent
 
 .DEFAULT_GOAL := help
 
 define uppercase
-$(shell sed -r 's/(^|-)(\w)/\U\2/g' <<< $(1))
+$(shell echo '$(1)' | sed -r 's/(^|-)(\w)/\U\2/g')
 endef
 
 pr-check:
@@ -129,23 +130,39 @@ build-examples:
 nuke:
 	docker kill $$(docker ps -q)
 
-test-dockerized: build-examples
-	@echo "Running dockerized tests locally..."
-	
+build-test-runner: build-examples
 	@echo "Building base Docker image with RIE and custom entrypoint..."
 	docker build \
 	-t local/test-base \
 	-f Dockerfile.test \
 	.
-	
+
 	@echo "Setting up containerized test runner..."
 	@if [ ! -d ".test-runner" ]; then \
 		echo "Cloning containerized-test-runner-for-aws-lambda..."; \
-		git clone --quiet https://github.com/aws/containerized-test-runner-for-aws-lambda.git .test-runner; \
+		git clone --quiet --branch $(TEST_RUNNER_BRANCH) https://github.com/aws/containerized-test-runner-for-aws-lambda.git .test-runner; \
 	fi
 	@echo "Building test runner Docker image..."
 	@docker build -t test-runner:local -f .test-runner/Dockerfile .test-runner
-	
+
+test-dockerized-concurrent: build-test-runner
+	@echo "Running concurrent scenarios in Docker..."
+	@docker network rm concurrent-test-net 2>/dev/null || true
+	@docker network create concurrent-test-net
+	@docker run --rm \
+		-e INPUT_SUITE_FILE_ARRAY='[]' \
+		-e INPUT_SCENARIO_DIR=/workspace/test/dockerized/scenarios \
+		-e DOCKER_IMAGE_NAME=local/test-base \
+		-e TASK_FOLDER=./test/dockerized/tasks \
+		-e GITHUB_WORKSPACE=/workspace \
+		-e DOCKER_SHARED_NETWORK=concurrent-test-net \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		-v "$(CURDIR):/workspace" \
+		-w /workspace \
+		test-runner:local
+	@docker network rm --force concurrent-test-net 2>/dev/null || true
+
+test-dockerized: build-test-runner
 	@echo "Running tests in Docker..."
 	@docker run --rm \
 		-e INPUT_SUITE_FILE_ARRAY='["./test/dockerized/suites/*.json"]' \
@@ -168,23 +185,23 @@ help: ## Show this help message
 	@echo 'Usage: make [target]'
 	@echo ''
 	@echo 'Available targets:'
-	@echo '  pr-check              Run pre-commit checks (fmt, clippy, tests)'
-	@echo '  integration-tests     Build and run AWS integration tests'
-	@echo '  check-event-features  Test individual event features'
-	@echo '  fmt                   Format code with cargo fmt'
-	@echo '  build-examples        Build example Lambda functions'
-	@echo '                        Usage: EXAMPLES="basic-lambda" OUTPUT_DIR=/make build-examples'
-	@echo '  test-rie              Test Lambda with Runtime Interface Emulator'
-	@echo '                        Usage: HANDLERS_TO_BUILD="basic-lambda basic-sqs" make test-rie'
-	@echo '                        Usage: HANDLERS_TO_BUILD="basic-lambda" HANDLER="basic-lambda" make test-rie'
-	@echo '  test-rie-lmi          Test RIE in Lambda Managed Instance mode'
-	@echo '                        Usage: RIE_MAX_CONCURRENCY=4 HANDLERS_TO_BUILD="basic-lambda-concurrent" make test-rie-lmi'
-	@echo '  test-dockerized       Run dockerized test harness'
-	@echo '  nuke                  Kill all running Docker containers'
+	@echo '  pr-check                    Run pre-commit checks (fmt, clippy, tests)'
+	@echo '  integration-tests           Build and run AWS integration tests'
+	@echo '  check-event-features        Test individual event features'
+	@echo '  fmt                         Format code with cargo fmt'
+	@echo '  build-examples              Build example Lambda functions'
+	@echo '                              Usage: EXAMPLES="basic-lambda" OUTPUT_DIR=/ make build-examples'
+	@echo '  test-rie                    Test Lambda with Runtime Interface Emulator'
+	@echo '                              Usage: HANDLERS_TO_BUILD="basic-lambda basic-sqs" make test-rie'
+	@echo '                              Usage: HANDLERS_TO_BUILD="basic-lambda" HANDLER="basic-lambda" make test-rie'
+	@echo '  test-rie-lmi                Test RIE in Lambda Managed Instance mode'
+	@echo '                              Usage: RIE_MAX_CONCURRENCY=4 HANDLERS_TO_BUILD="basic-lambda-concurrent" make test-rie-lmi'
+	@echo '  test-dockerized             Run dockerized test harness'
+	@echo '  test-dockerized-concurrent  Run concurrent LMI test scenarios'
+	@echo '  nuke                        Kill all running Docker containers'
 	@echo ''
 	@echo 'Environment variables:'
-	@echo '  EXAMPLES              Space-separated list of examples to build (for build-examples)'
-	@echo '  HANDLERS_TO_BUILD     Space-separated list of handlers to build for RIE (for test-rie)'
-	@echo '  HANDLER               Specific handler to run (defaults to first in HANDLERS_TO_BUILD)'
-	@echo '  OUTPUT_DIR            Directory for built binaries (default: /tmp/var-task for build-examples, /var/task for Docker)'
-	@echo '  RIE_MAX_CONCURRENCY   Max concurrent Lambda invocations for LMI mode (for test-rie-lmi)'
+	@echo '  HANDLERS_TO_BUILD           Space-separated list of handlers to build for RIE (for test-rie)'
+	@echo '  HANDLER                     Specific handler to run (defaults to first in HANDLERS_TO_BUILD)'
+	@echo '  OUTPUT_DIR                  Directory for built binaries (default: test/dockerized/tasks)'
+	@echo '  RIE_MAX_CONCURRENCY         Max concurrent Lambda invocations for LMI mode (for test-rie-lmi)'

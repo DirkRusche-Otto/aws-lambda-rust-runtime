@@ -935,10 +935,10 @@ mod endpoint_tests {
         Ok(())
     }
 
-    #[tokio::test]
     #[cfg(feature = "concurrency-tokio")]
-    #[traced_test]
-    #[cfg(feature = "tokio-concurrent-runtime")]
+    // Must be current-thread (the default) so the thread-local tracing
+    // subscriber set via `set_default` propagates to spawned tasks.
+    #[tokio::test]
     async fn test_concurrent_structured_logging_isolation() -> Result<(), Error> {
         use std::collections::HashSet;
         use tracing::info;
@@ -947,7 +947,7 @@ mod endpoint_tests {
 
         let storage = SharedStorage::default();
         let subscriber = tracing_subscriber::registry().with(CaptureLayer::new(&storage));
-        tracing::subscriber::set_global_default(subscriber).unwrap();
+        let _guard = tracing::subscriber::set_default(subscriber);
 
         let request_count = Arc::new(AtomicUsize::new(0));
         let done = Arc::new(tokio::sync::Notify::new());
